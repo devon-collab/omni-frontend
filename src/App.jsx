@@ -1,0 +1,1019 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ─── CONFIG ────────────────────────────────────────────────
+const API = "https://omni-backend-8tje.onrender.com";
+const SUPABASE_URL = "https://placeholder.supabase.co"; // will be set via env
+
+// ─── API HELPERS ───────────────────────────────────────────
+const api = {
+  token: null,
+  setToken(t) { this.token = t; },
+  async get(path) {
+    const r = await fetch(`${API}${path}`, {
+      headers: { Authorization: `Bearer ${this.token}` }
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async post(path, body) {
+    const r = await fetch(`${API}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async patch(path, body) {
+    const r = await fetch(`${API}${path}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async streamJarvis(messages, context, onChunk, onDone) {
+    const r = await fetch(`${API}/api/jarvis/chat`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messages, context })
+    });
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === "text") onChunk(data.text);
+          if (data.type === "done") onDone();
+        } catch {}
+      }
+    }
+  }
+};
+
+// ─── STYLES ────────────────────────────────────────────────
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --f:'Plus Jakarta Sans',system-ui,sans-serif;
+    --m:'JetBrains Mono',monospace;
+    --g-bg:#f4f5f7;--g-panel:#fff;--g-border:#e5e7eb;--g-border2:#d1d5db;
+    --g-ink:#111827;--g-ink2:#374151;--g-ink3:#6b7280;--g-ink4:#9ca3af;
+    --blue:#2563eb;--blue2:#1d4ed8;--blue3:#dbeafe;
+    --grn:#10b981;--grn2:#059669;--grn3:#d1fae5;
+    --red:#ef4444;--red3:#fee2e2;
+    --amb:#f59e0b;--amb3:#fef3c7;
+    --pur:#8b5cf6;--pur2:#7c3aed;--pur3:#ede9fe;
+    --ind:#6366f1;
+    --jarvis-bg:#05050f;--jarvis-bg2:#0a0a1a;
+    --sbw:220px;--hh:48px;
+    --r4:4px;--r6:6px;--r8:8px;--r12:12px;--r16:16px;
+    --sh:0 1px 3px rgba(0,0,0,.08);--sh2:0 4px 16px rgba(0,0,0,.1);
+  }
+  html,body,#root{height:100%;font-family:var(--f);background:var(--g-bg);color:var(--g-ink);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden}
+  ::-webkit-scrollbar{width:4px;height:4px}
+  ::-webkit-scrollbar-thumb{background:var(--g-border2);border-radius:3px}
+  button{font-family:var(--f);cursor:pointer;border:none}
+  input,textarea{font-family:var(--f)}
+
+  /* LOGIN */
+  .login-wrap{position:fixed;inset:0;background:linear-gradient(135deg,#05050f 0%,#0a0a1a 50%,#12122a 100%);display:flex;align-items:center;justify-content:center}
+  .login-card{width:400px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:var(--r16);padding:40px;backdrop-filter:blur(20px)}
+  .login-orb{width:60px;height:60px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#a78bfa,#6366f1,#312e81);box-shadow:0 0 40px rgba(99,102,241,.5);margin:0 auto 20px;animation:pulse 3s ease-in-out infinite}
+  @keyframes pulse{0%,100%{transform:scale(1);box-shadow:0 0 40px rgba(99,102,241,.5)}50%{transform:scale(1.05);box-shadow:0 0 60px rgba(99,102,241,.7)}}
+  .login-title{font-size:24px;font-weight:800;color:#fff;text-align:center;letter-spacing:-.5px}
+  .login-sub{font-size:13px;color:rgba(255,255,255,.4);text-align:center;margin:6px 0 28px}
+  .login-label{display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-family:var(--m)}
+  .login-inp{width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:var(--r8);padding:11px 14px;font-size:14px;color:#fff;outline:none;transition:.15s;margin-bottom:12px}
+  .login-inp:focus{border-color:rgba(99,102,241,.6);background:rgba(255,255,255,.08);box-shadow:0 0 0 3px rgba(99,102,241,.2)}
+  .login-inp::placeholder{color:rgba(255,255,255,.2)}
+  .login-btn{width:100%;padding:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:var(--r8);font-size:14px;font-weight:700;color:#fff;margin-top:4px;transition:.15s}
+  .login-btn:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(99,102,241,.4)}
+  .login-btn:disabled{opacity:.6;transform:none}
+  .login-err{color:#fca5a5;font-size:12px;text-align:center;margin-top:12px}
+
+  /* APP SHELL */
+  .app{display:flex;height:100vh;overflow:hidden}
+  
+  /* SIDEBAR */
+  .sidebar{width:var(--sbw);background:#111827;display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+  .sb-logo{padding:14px 14px 10px;display:flex;align-items:center;gap:8px}
+  .sb-logo-mark{width:28px;height:28px;border-radius:6px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;flex-shrink:0}
+  .sb-logo-name{font-size:13px;font-weight:800;color:#fff;letter-spacing:-.2px}
+  .sb-ws{margin:4px 8px 8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-radius:var(--r8);padding:7px 10px;display:flex;align-items:center;gap:8px}
+  .sb-ws-av{width:20px;height:20px;border-radius:4px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:800;color:#fff;flex-shrink:0}
+  .sb-ws-name{font-size:11.5px;font-weight:700;color:#fff;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sb-section{padding:10px 14px 4px;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:rgba(255,255,255,.25)}
+  .sbi{display:flex;align-items:center;gap:8px;padding:6px 10px 6px 12px;border-radius:var(--r6);cursor:pointer;font-size:12px;font-weight:500;color:rgba(255,255,255,.5);margin:1px 6px;position:relative;transition:.1s;user-select:none}
+  .sbi:hover{background:rgba(255,255,255,.08);color:rgba(255,255,255,.85)}
+  .sbi.on{background:rgba(255,255,255,.13);color:#fff}
+  .sbi.on::before{content:'';position:absolute;left:0;top:22%;bottom:22%;width:2.5px;background:#0ea5e9;border-radius:0 2px 2px 0}
+  .sbi-ico{font-size:14px;flex-shrink:0}
+  .sbi-badge{margin-left:auto;font-size:9.5px;font-weight:700;padding:1.5px 6px;border-radius:99px;background:#2563eb;color:#fff;font-family:var(--m)}
+  .sb-bottom{margin-top:auto;padding:10px 8px;border-top:1px solid rgba(255,255,255,.07)}
+  .sb-user{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--r8);cursor:pointer}
+  .sb-user:hover{background:rgba(255,255,255,.08)}
+  .sb-av{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;flex-shrink:0}
+  .sb-user-name{font-size:12px;font-weight:600;color:#fff;flex:1}
+  .sb-user-role{font-size:10px;color:rgba(255,255,255,.35)}
+
+  /* MAIN */
+  .main{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:var(--hh);background:var(--g-panel);border-bottom:1px solid var(--g-border);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+  .topbar-title{font-size:15px;font-weight:700;color:var(--g-ink);flex:1}
+  .search-box{display:flex;align-items:center;gap:8px;background:var(--g-bg);border:1px solid var(--g-border);border-radius:var(--r8);padding:6px 12px;width:240px;cursor:text}
+  .search-inp{border:none;background:transparent;outline:none;font-size:13px;color:var(--g-ink);flex:1}
+  .search-inp::placeholder{color:var(--g-ink4)}
+  .search-kbd{font-size:11px;font-family:var(--m);color:var(--g-ink4);background:var(--g-border);padding:2px 5px;border-radius:3px}
+  .topbar-btn{display:flex;align-items:center;gap:6px;padding:7px 14px;border-radius:var(--r8);font-size:13px;font-weight:600;background:var(--ind);color:#fff;transition:.1s}
+  .topbar-btn:hover{background:var(--pur2)}
+  .content{flex:1;overflow-y:auto;padding:24px}
+
+  /* JARVIS ORB */
+  .jorb-wrap{position:fixed;top:10px;right:12px;z-index:500;display:flex;align-items:center;gap:8px}
+  .jorb{width:36px;height:36px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#a78bfa,#6366f1,#312e81);box-shadow:0 0 14px rgba(99,102,241,.5);cursor:pointer;animation:orb-idle 3s ease-in-out infinite;transition:all .3s;border:none}
+  .jorb.thinking{background:radial-gradient(circle at 35% 35%,#fbbf24,#f59e0b,#92400e);box-shadow:0 0 18px rgba(245,158,11,.6);animation:orb-spin 2s linear infinite}
+  @keyframes orb-idle{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+  @keyframes orb-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+
+  /* JARVIS PANEL */
+  .jp{position:fixed;top:var(--hh);right:0;width:360px;height:calc(100vh - var(--hh));background:var(--jarvis-bg);border-left:1px solid rgba(255,255,255,.07);z-index:400;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s cubic-bezier(.16,1,.3,1)}
+  .jp.open{transform:translateX(0)}
+  .jp-hdr{background:linear-gradient(135deg,#0a0a1a,#12122a);border-bottom:1px solid rgba(255,255,255,.06);padding:13px 16px;display:flex;align-items:center;gap:10px}
+  .jp-orb{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6,#a78bfa);display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 0 12px rgba(99,102,241,.4)}
+  .jp-title{font-size:14px;font-weight:800;color:#fff;letter-spacing:-.2px}
+  .jp-sub{font-size:10px;color:rgba(255,255,255,.3);font-family:var(--m)}
+  .jp-close{margin-left:auto;background:none;color:rgba(255,255,255,.3);font-size:18px;line-height:1;padding:4px}
+  .jp-close:hover{color:rgba(255,255,255,.7)}
+  .jp-msgs{flex:1;padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+  .jp-msgs::-webkit-scrollbar{width:3px}
+  .jp-msgs::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08)}
+  .jmsg{display:flex;gap:8px;align-items:flex-start}
+  .jmsg.u{flex-direction:row-reverse}
+  .jmsg-av{width:26px;height:26px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800}
+  .jmsg.ai .jmsg-av{background:linear-gradient(135deg,rgba(99,102,241,.3),rgba(139,92,246,.3));border:1px solid rgba(99,102,241,.3);color:#a5b4fc}
+  .jmsg.u .jmsg-av{background:rgba(14,165,233,.15);border:1px solid rgba(14,165,233,.2);color:#7dd3fc}
+  .jbub{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:12.5px;color:rgba(255,255,255,.75);line-height:1.6;max-width:290px;white-space:pre-wrap}
+  .jmsg.u .jbub{background:rgba(14,165,233,.1);border-color:rgba(14,165,233,.18);color:rgba(255,255,255,.88)}
+  .jp-sugs{display:flex;gap:4px;padding:8px 14px;border-top:1px solid rgba(255,255,255,.04);flex-wrap:wrap}
+  .jp-sug{font-size:11px;color:rgba(255,255,255,.4);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);padding:4px 9px;border-radius:99px;cursor:pointer;transition:.1s;white-space:nowrap}
+  .jp-sug:hover{background:rgba(255,255,255,.08);color:rgba(255,255,255,.7)}
+  .jp-inp-row{padding:10px 12px;border-top:1px solid rgba(255,255,255,.06);display:flex;gap:8px;align-items:center;background:#0a0a14}
+  .jp-inp{flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:var(--r6);padding:9px 12px;font-size:12.5px;color:rgba(255,255,255,.85);outline:none;transition:.15s}
+  .jp-inp:focus{border-color:rgba(99,102,241,.4);background:rgba(255,255,255,.07)}
+  .jp-inp::placeholder{color:rgba(255,255,255,.2)}
+  .jp-send{width:34px;height:34px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:var(--r6);display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;font-size:14px;transition:.1s;flex-shrink:0}
+  .jp-send:hover{transform:scale(1.05)}
+
+  /* CARDS & TABLES */
+  .card{background:var(--g-panel);border:1px solid var(--g-border);border-radius:var(--r12);padding:20px}
+  .card-title{font-size:14px;font-weight:700;color:var(--g-ink);margin-bottom:16px;display:flex;align-items:center;gap:8px}
+  .page-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+  .page-title{font-size:20px;font-weight:800;color:var(--g-ink);letter-spacing:-.3px}
+  .page-sub{font-size:13px;color:var(--g-ink3);margin-top:2px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:var(--r8);font-size:13px;font-weight:600;transition:.1s;cursor:pointer;border:none}
+  .btn-pri{background:var(--ind);color:#fff}
+  .btn-pri:hover{background:var(--pur2)}
+  .btn-sec{background:var(--g-bg);border:1px solid var(--g-border);color:var(--g-ink2)}
+  .btn-sec:hover{background:var(--g-border)}
+  .btn-sm{padding:5px 10px;font-size:12px}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11px;font-weight:700;color:var(--g-ink3);text-transform:uppercase;letter-spacing:.06em;padding:8px 12px;border-bottom:1px solid var(--g-border);background:var(--g-bg)}
+  td{padding:11px 12px;border-bottom:1px solid var(--g-border);font-size:13px;color:var(--g-ink2)}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:rgba(0,0,0,.015)}
+  .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;font-family:var(--m)}
+  .badge-blue{background:var(--blue3);color:var(--blue2)}
+  .badge-grn{background:var(--grn3);color:var(--grn2)}
+  .badge-red{background:var(--red3);color:#dc2626}
+  .badge-amb{background:var(--amb3);color:#92400e}
+  .badge-pur{background:var(--pur3);color:var(--pur2)}
+  .badge-gray{background:var(--g-bg);border:1px solid var(--g-border);color:var(--g-ink3)}
+  .av{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;flex-shrink:0}
+  .av-sm{width:24px;height:24px;font-size:9px}
+  .empty{text-align:center;padding:60px 20px;color:var(--g-ink3)}
+  .empty-ico{font-size:40px;margin-bottom:12px;opacity:.4}
+  .empty-msg{font-size:14px;font-weight:600;margin-bottom:6px;color:var(--g-ink2)}
+  .empty-sub{font-size:13px}
+  .loading{display:flex;align-items:center;justify-content:center;padding:60px;color:var(--g-ink3);gap:10px}
+  .spinner{width:20px;height:20px;border:2px solid var(--g-border);border-top-color:var(--ind);border-radius:50%;animation:spin .6s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* STATS ROW */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+  .stat{background:var(--g-panel);border:1px solid var(--g-border);border-radius:var(--r12);padding:18px 20px}
+  .stat-label{font-size:11px;font-weight:700;color:var(--g-ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+  .stat-val{font-size:26px;font-weight:800;color:var(--g-ink);letter-spacing:-.5px}
+  .stat-sub{font-size:12px;color:var(--g-ink3);margin-top:4px}
+
+  /* CONTACT DETAIL */
+  .detail-wrap{display:grid;grid-template-columns:300px 1fr;gap:20px}
+  .detail-profile{background:var(--g-panel);border:1px solid var(--g-border);border-radius:var(--r12);padding:24px;text-align:center}
+  .detail-av{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:#fff;margin:0 auto 12px}
+  .detail-name{font-size:18px;font-weight:800;color:var(--g-ink);letter-spacing:-.3px}
+  .detail-company{font-size:13px;color:var(--g-ink3);margin-top:2px}
+  .detail-fields{margin-top:20px;text-align:left;display:flex;flex-direction:column;gap:12px}
+  .detail-field{display:flex;flex-direction:column;gap:2px}
+  .detail-field-label{font-size:11px;font-weight:700;color:var(--g-ink4);text-transform:uppercase;letter-spacing:.06em}
+  .detail-field-val{font-size:13px;color:var(--g-ink2)}
+  .back-btn{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--g-ink3);cursor:pointer;margin-bottom:16px;background:none;border:none;padding:0}
+  .back-btn:hover{color:var(--g-ink)}
+
+  /* PIPELINE KANBAN */
+  .kanban{display:flex;gap:16px;overflow-x:auto;padding-bottom:16px}
+  .kanban-col{min-width:260px;flex-shrink:0}
+  .kanban-col-hdr{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--g-panel);border:1px solid var(--g-border);border-radius:var(--r8) var(--r8) 0 0;border-bottom:2px solid var(--g-border2)}
+  .kanban-col-name{font-size:12px;font-weight:700;color:var(--g-ink2);flex:1}
+  .kanban-col-count{font-size:11px;font-family:var(--m);color:var(--g-ink3);background:var(--g-bg);padding:1px 6px;border-radius:99px}
+  .kanban-col-total{font-size:11px;font-weight:700;color:var(--g-ink3)}
+  .kanban-cards{background:var(--g-bg);border:1px solid var(--g-border);border-top:none;border-radius:0 0 var(--r8) var(--r8);padding:8px;display:flex;flex-direction:column;gap:8px;min-height:100px}
+  .deal-card{background:var(--g-panel);border:1px solid var(--g-border);border-radius:var(--r8);padding:12px;cursor:pointer;transition:.1s}
+  .deal-card:hover{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.08)}
+  .deal-name{font-size:13px;font-weight:700;color:var(--g-ink);margin-bottom:6px}
+  .deal-company{font-size:12px;color:var(--g-ink3);margin-bottom:8px}
+  .deal-footer{display:flex;align-items:center;justify-content:space-between}
+  .deal-amount{font-size:13px;font-weight:800;color:var(--g-ink);font-family:var(--m)}
+  .deal-days{font-size:11px;color:var(--g-ink4);font-family:var(--m)}
+
+  /* MODAL */
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:800;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+  .modal{background:var(--g-panel);border-radius:var(--r16);padding:28px;width:500px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+  .modal-title{font-size:16px;font-weight:800;color:var(--g-ink);margin-bottom:20px}
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:12px;font-weight:700;color:var(--g-ink2);margin-bottom:6px}
+  .inp{width:100%;border:1px solid var(--g-border);border-radius:var(--r8);padding:9px 12px;font-size:13px;color:var(--g-ink);outline:none;transition:.15s;background:var(--g-panel)}
+  .inp:focus{border-color:var(--ind);box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+  .inp-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .modal-footer{display:flex;gap:10px;justify-content:flex-end;margin-top:24px}
+  select.inp{cursor:pointer}
+
+  /* SEARCH DROPDOWN */
+  .search-drop{position:absolute;top:calc(var(--hh));left:50%;transform:translateX(-50%);width:540px;background:var(--g-panel);border:1px solid var(--g-border);border-radius:var(--r12);box-shadow:var(--sh2);z-index:600;overflow:hidden}
+  .search-drop-item{display:flex;align-items:center;gap:12px;padding:10px 16px;cursor:pointer;transition:.1s}
+  .search-drop-item:hover{background:var(--g-bg)}
+  .search-drop-type{font-size:10px;font-weight:700;font-family:var(--m);color:var(--g-ink4);text-transform:uppercase;padding:1.5px 6px;background:var(--g-bg);border-radius:3px;flex-shrink:0}
+  .search-drop-label{font-size:13px;font-weight:600;color:var(--g-ink)}
+  .search-drop-sub{font-size:12px;color:var(--g-ink3)}
+`;
+
+// ─── COLORS FOR AVATARS ────────────────────────────────────
+const AV_COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#0ea5e9","#ec4899","#14b8a6"];
+const avColor = (str) => AV_COLORS[(str?.charCodeAt(0) || 0) % AV_COLORS.length];
+const initials = (name) => name ? name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0,2) : "?";
+
+// ─── STAGE CONFIG ──────────────────────────────────────────
+const DEAL_STAGES = [
+  { id: "lead", name: "Lead", color: "#6b7280" },
+  { id: "qualified", name: "Qualified", color: "#3b82f6" },
+  { id: "proposal", name: "Proposal", color: "#8b5cf6" },
+  { id: "negotiation", name: "Negotiation", color: "#f59e0b" },
+  { id: "won", name: "Won", color: "#10b981" },
+];
+const LIFECYCLE_STAGES = ["lead","subscriber","opportunity","customer","evangelist"];
+
+// ═══════════════════════════════════════════════════════════
+// COMPONENTS
+// ═══════════════════════════════════════════════════════════
+
+// ─── JARVIS ───────────────────────────────────────────────
+function Jarvis({ open, onToggle, user, currentPage }) {
+  const [msgs, setMsgs] = useState([
+    { role: "ai", text: `Hey ${user?.name?.split(" ")[0] || "there"} 👋 I'm JARVIS — your AI executive assistant. I have full context across your workspace. What do you need?` }
+  ]);
+  const [input, setInput] = useState("");
+  const [thinking, setThinking] = useState(false);
+  const msgsRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (msgsRef.current) msgsRef.current.scrollTop = msgsRef.current.scrollHeight;
+  }, [msgs]);
+
+  useEffect(() => {
+    if (open && inputRef.current) setTimeout(() => inputRef.current.focus(), 300);
+  }, [open]);
+
+  const send = async (text) => {
+    if (!text.trim() || thinking) return;
+    const userMsg = { role: "u", text };
+    setMsgs(m => [...m, userMsg]);
+    setInput("");
+    setThinking(true);
+
+    const history = msgs
+      .filter(m => m.role !== "ai" || msgs.indexOf(m) > 0)
+      .map(m => ({ role: m.role === "u" ? "user" : "assistant", content: m.text }));
+    history.push({ role: "user", content: text });
+
+    let aiText = "";
+    setMsgs(m => [...m, { role: "ai", text: "▋", streaming: true }]);
+
+    try {
+      await api.streamJarvis(history, currentPage,
+        (chunk) => {
+          aiText += chunk;
+          setMsgs(m => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "ai", text: aiText + "▋", streaming: true };
+            return copy;
+          });
+        },
+        () => {
+          setMsgs(m => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "ai", text: aiText };
+            return copy;
+          });
+          setThinking(false);
+        }
+      );
+    } catch (e) {
+      setMsgs(m => {
+        const copy = [...m];
+        copy[copy.length - 1] = { role: "ai", text: "Something went wrong. Try again." };
+        return copy;
+      });
+      setThinking(false);
+    }
+  };
+
+  const sugs = ["What's my pipeline looking like?", "Any urgent tickets?", "Draft a follow-up for my top deal", "What tasks are overdue?"];
+
+  return (
+    <>
+      <div className="jorb-wrap">
+        <button className={`jorb ${thinking ? "thinking" : ""}`} onClick={onToggle} title="JARVIS AI" />
+      </div>
+      <div className={`jp ${open ? "open" : ""}`}>
+        <div className="jp-hdr">
+          <div className="jp-orb">🤖</div>
+          <div>
+            <div className="jp-title">JARVIS</div>
+            <div className="jp-sub">AI Executive Assistant</div>
+          </div>
+          <button className="jp-close" onClick={onToggle}>×</button>
+        </div>
+        <div className="jp-msgs" ref={msgsRef}>
+          {msgs.map((m, i) => (
+            <div key={i} className={`jmsg ${m.role}`}>
+              <div className="jmsg-av">{m.role === "ai" ? "J" : initials(user?.name)}</div>
+              <div className="jbub">{m.text}</div>
+            </div>
+          ))}
+        </div>
+        {!thinking && (
+          <div className="jp-sugs">
+            {sugs.map(s => (
+              <button key={s} className="jp-sug" onClick={() => send(s)}>{s}</button>
+            ))}
+          </div>
+        )}
+        <div className="jp-inp-row">
+          <input
+            ref={inputRef}
+            className="jp-inp"
+            placeholder="Ask JARVIS anything..."
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && !e.shiftKey && send(input)}
+          />
+          <button className="jp-send" onClick={() => send(input)}>↑</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── SEARCH ───────────────────────────────────────────────
+function SearchBox({ onNavigate }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!q || q.length < 2) { setResults([]); setOpen(false); return; }
+    const timer = setTimeout(async () => {
+      try {
+        const data = await api.get(`/api/search?q=${encodeURIComponent(q)}`);
+        setResults(data.slice(0, 8));
+        setOpen(true);
+      } catch {}
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [q]);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <div className="search-box">
+        <span style={{ color: "var(--g-ink4)", fontSize: 14 }}>🔍</span>
+        <input
+          className="search-inp"
+          placeholder="Search everything..."
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          onFocus={() => q.length >= 2 && setOpen(true)}
+        />
+        <span className="search-kbd">⌘K</span>
+      </div>
+      {open && results.length > 0 && (
+        <div className="search-drop">
+          {results.map((r, i) => (
+            <div key={i} className="search-drop-item" onClick={() => {
+              setQ(""); setOpen(false);
+              onNavigate(r.type, r);
+            }}>
+              <span className="search-drop-type">{r.type}</span>
+              <div>
+                <div className="search-drop-label">{r.label}</div>
+                {r.email && <div className="search-drop-sub">{r.email}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── CONTACTS MODULE ──────────────────────────────────────
+function Contacts({ onSelectContact }) {
+  const [contacts, setContacts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [search, setSearch] = useState("");
+  const [stageFilter, setStageFilter] = useState("");
+  const [form, setForm] = useState({ first_name: "", last_name: "", email: "", phone: "", lifecycle_stage: "lead", job_title: "" });
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: 100 });
+      if (search) params.set("search", search);
+      if (stageFilter) params.set("stage", stageFilter);
+      const res = await api.get(`/api/contacts?${params}`);
+      setContacts(res.data || []);
+    } catch { setContacts([]); }
+    setLoading(false);
+  }, [search, stageFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const stageColor = (s) => ({ lead: "badge-gray", subscriber: "badge-blue", opportunity: "badge-pur", customer: "badge-grn", evangelist: "badge-amb" }[s] || "badge-gray");
+
+  const save = async () => {
+    if (!form.first_name || !form.email) return;
+    setSaving(true);
+    try {
+      await api.post("/api/contacts", form);
+      setShowAdd(false);
+      setForm({ first_name: "", last_name: "", email: "", phone: "", lifecycle_stage: "lead", job_title: "" });
+      load();
+    } catch {}
+    setSaving(false);
+  };
+
+  const stats = {
+    total: contacts.length,
+    customers: contacts.filter(c => c.lifecycle_stage === "customer").length,
+    leads: contacts.filter(c => c.lifecycle_stage === "lead").length,
+    opps: contacts.filter(c => c.lifecycle_stage === "opportunity").length,
+  };
+
+  return (
+    <div>
+      <div className="page-hdr">
+        <div>
+          <div className="page-title">CRM — Contacts</div>
+          <div className="page-sub">{contacts.length} contacts</div>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <input className="inp" style={{ width: 200 }} placeholder="Search contacts..." value={search} onChange={e => setSearch(e.target.value)} />
+          <select className="inp" style={{ width: 140 }} value={stageFilter} onChange={e => setStageFilter(e.target.value)}>
+            <option value="">All stages</option>
+            {LIFECYCLE_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <button className="btn btn-pri" onClick={() => setShowAdd(true)}>+ Add Contact</button>
+        </div>
+      </div>
+
+      <div className="stats">
+        <div className="stat"><div className="stat-label">Total Contacts</div><div className="stat-val">{stats.total}</div></div>
+        <div className="stat"><div className="stat-label">Customers</div><div className="stat-val" style={{ color: "var(--grn2)" }}>{stats.customers}</div></div>
+        <div className="stat"><div className="stat-label">Leads</div><div className="stat-val" style={{ color: "var(--g-ink3)" }}>{stats.leads}</div></div>
+        <div className="stat"><div className="stat-label">Opportunities</div><div className="stat-val" style={{ color: "var(--pur2)" }}>{stats.opps}</div></div>
+      </div>
+
+      <div className="card" style={{ padding: 0 }}>
+        {loading ? <div className="loading"><div className="spinner" /><span>Loading contacts...</span></div> :
+         contacts.length === 0 ? (
+           <div className="empty">
+             <div className="empty-ico">👥</div>
+             <div className="empty-msg">No contacts yet</div>
+             <div className="empty-sub">Add your first contact to get started</div>
+           </div>
+         ) : (
+          <table>
+            <thead><tr>
+              <th>Name</th><th>Email</th><th>Company</th><th>Stage</th><th>Title</th>
+            </tr></thead>
+            <tbody>
+              {contacts.map(c => (
+                <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => onSelectContact(c)}>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div className="av av-sm" style={{ background: avColor(`${c.first_name}${c.last_name}`) }}>{initials(`${c.first_name} ${c.last_name}`)}</div>
+                      <span style={{ fontWeight: 600, color: "var(--g-ink)" }}>{c.first_name} {c.last_name}</span>
+                    </div>
+                  </td>
+                  <td style={{ color: "var(--g-ink3)" }}>{c.email}</td>
+                  <td>{c.companies?.name || "—"}</td>
+                  <td><span className={`badge ${stageColor(c.lifecycle_stage)}`}>{c.lifecycle_stage}</span></td>
+                  <td style={{ color: "var(--g-ink3)" }}>{c.job_title || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showAdd && (
+        <div className="modal-bg" onClick={e => e.target === e.currentTarget && setShowAdd(false)}>
+          <div className="modal">
+            <div className="modal-title">Add Contact</div>
+            <div className="inp-row">
+              <div className="field"><label>First Name *</label><input className="inp" value={form.first_name} onChange={e => setForm(f => ({...f, first_name: e.target.value}))} placeholder="Sarah" /></div>
+              <div className="field"><label>Last Name</label><input className="inp" value={form.last_name} onChange={e => setForm(f => ({...f, last_name: e.target.value}))} placeholder="Smith" /></div>
+            </div>
+            <div className="field"><label>Email *</label><input className="inp" type="email" value={form.email} onChange={e => setForm(f => ({...f, email: e.target.value}))} placeholder="sarah@company.com" /></div>
+            <div className="inp-row">
+              <div className="field"><label>Phone</label><input className="inp" value={form.phone} onChange={e => setForm(f => ({...f, phone: e.target.value}))} placeholder="+27 82 000 0000" /></div>
+              <div className="field"><label>Job Title</label><input className="inp" value={form.job_title} onChange={e => setForm(f => ({...f, job_title: e.target.value}))} placeholder="CMO" /></div>
+            </div>
+            <div className="field"><label>Lifecycle Stage</label>
+              <select className="inp" value={form.lifecycle_stage} onChange={e => setForm(f => ({...f, lifecycle_stage: e.target.value}))}>
+                {LIFECYCLE_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-sec" onClick={() => setShowAdd(false)}>Cancel</button>
+              <button className="btn btn-pri" onClick={save} disabled={saving}>{saving ? "Saving..." : "Add Contact"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── CONTACT DETAIL ───────────────────────────────────────
+function ContactDetail({ contact: initial, onBack }) {
+  const [contact, setContact] = useState(initial);
+  const [deals, setDeals] = useState([]);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ ...initial });
+
+  useEffect(() => {
+    api.get(`/api/deals`).then(data => {
+      setDeals((data || []).filter(d => d.contact_id === contact.id));
+    }).catch(() => {});
+  }, [contact.id]);
+
+  const save = async () => {
+    try {
+      const updated = await api.patch(`/api/contacts/${contact.id}`, form);
+      setContact(updated);
+      setEditing(false);
+    } catch {}
+  };
+
+  const stageColor = (s) => ({ lead: "#6b7280", subscriber: "#3b82f6", opportunity: "#8b5cf6", customer: "#10b981", evangelist: "#f59e0b" }[s] || "#6b7280");
+
+  return (
+    <div>
+      <button className="back-btn" onClick={onBack}>← Back to Contacts</button>
+      <div className="detail-wrap">
+        <div>
+          <div className="detail-profile">
+            <div className="detail-av" style={{ background: avColor(`${contact.first_name}${contact.last_name}`) }}>
+              {initials(`${contact.first_name} ${contact.last_name}`)}
+            </div>
+            <div className="detail-name">{contact.first_name} {contact.last_name}</div>
+            <div className="detail-company">{contact.companies?.name || contact.job_title || "No company"}</div>
+            <div style={{ marginTop: 12 }}>
+              <span className="badge" style={{ background: stageColor(contact.lifecycle_stage) + "22", color: stageColor(contact.lifecycle_stage) }}>{contact.lifecycle_stage}</span>
+            </div>
+            {!editing ? (
+              <>
+                <div className="detail-fields">
+                  {contact.email && <div className="detail-field"><div className="detail-field-label">Email</div><div className="detail-field-val">{contact.email}</div></div>}
+                  {contact.phone && <div className="detail-field"><div className="detail-field-label">Phone</div><div className="detail-field-val">{contact.phone}</div></div>}
+                  {contact.job_title && <div className="detail-field"><div className="detail-field-label">Title</div><div className="detail-field-val">{contact.job_title}</div></div>}
+                </div>
+                <button className="btn btn-sec btn-sm" style={{ marginTop: 16, width: "100%" }} onClick={() => setEditing(true)}>Edit Contact</button>
+              </>
+            ) : (
+              <div style={{ marginTop: 16, textAlign: "left" }}>
+                <div className="field"><label>First Name</label><input className="inp" value={form.first_name} onChange={e => setForm(f => ({...f, first_name: e.target.value}))} /></div>
+                <div className="field"><label>Last Name</label><input className="inp" value={form.last_name} onChange={e => setForm(f => ({...f, last_name: e.target.value}))} /></div>
+                <div className="field"><label>Email</label><input className="inp" value={form.email || ""} onChange={e => setForm(f => ({...f, email: e.target.value}))} /></div>
+                <div className="field"><label>Phone</label><input className="inp" value={form.phone || ""} onChange={e => setForm(f => ({...f, phone: e.target.value}))} /></div>
+                <div className="field"><label>Stage</label>
+                  <select className="inp" value={form.lifecycle_stage} onChange={e => setForm(f => ({...f, lifecycle_stage: e.target.value}))}>
+                    {LIFECYCLE_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button className="btn btn-sec btn-sm" style={{ flex: 1 }} onClick={() => setEditing(false)}>Cancel</button>
+                  <button className="btn btn-pri btn-sm" style={{ flex: 1 }} onClick={save}>Save</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="card">
+            <div className="card-title">💼 Deals ({deals.length})</div>
+            {deals.length === 0 ? <div style={{ color: "var(--g-ink3)", fontSize: 13 }}>No deals linked to this contact.</div> :
+              deals.map(d => (
+                <div key={d.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--g-border)" }}>
+                  <div style={{ fontWeight: 700, color: "var(--g-ink)" }}>{d.name}</div>
+                  <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+                    <span className="badge badge-blue">{d.stage_id}</span>
+                    <span style={{ fontSize: 12, color: "var(--g-ink3)", fontFamily: "var(--m)" }}>R{(d.amount || 0).toLocaleString()}</span>
+                  </div>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── PIPELINE MODULE ──────────────────────────────────────
+function Pipeline() {
+  const [deals, setDeals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ name: "", amount: "", stage_id: "lead", contact_id: "" });
+  const [contacts, setContacts] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      api.get("/api/deals"),
+      api.get("/api/contacts?limit=200")
+    ]).then(([d, c]) => {
+      setDeals(d || []);
+      setContacts(c.data || []);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const stageDeals = (stageId) => deals.filter(d => d.stage_id === stageId);
+  const stageTotal = (stageId) => stageDeals(stageId).reduce((sum, d) => sum + (d.amount || 0), 0);
+  const daysSince = (d) => Math.floor((Date.now() - new Date(d.stage_entered || d.created_at)) / 86400000);
+
+  const moveStage = async (dealId, newStage) => {
+    try {
+      const updated = await api.patch(`/api/deals/${dealId}`, { stage_id: newStage, stage_entered: new Date().toISOString() });
+      setDeals(prev => prev.map(d => d.id === dealId ? { ...d, ...updated } : d));
+    } catch {}
+  };
+
+  const save = async () => {
+    if (!form.name) return;
+    setSaving(true);
+    try {
+      const newDeal = await api.post("/api/deals", { ...form, amount: parseFloat(form.amount) || 0 });
+      setDeals(prev => [...prev, newDeal]);
+      setShowAdd(false);
+      setForm({ name: "", amount: "", stage_id: "lead", contact_id: "" });
+    } catch {}
+    setSaving(false);
+  };
+
+  const totalPipeline = deals.filter(d => d.stage_id !== "won").reduce((sum, d) => sum + (d.amount || 0), 0);
+  const wonDeals = deals.filter(d => d.stage_id === "won");
+  const wonValue = wonDeals.reduce((sum, d) => sum + (d.amount || 0), 0);
+
+  if (loading) return <div className="loading"><div className="spinner" /><span>Loading pipeline...</span></div>;
+
+  return (
+    <div>
+      <div className="page-hdr">
+        <div>
+          <div className="page-title">Pipeline</div>
+          <div className="page-sub">{deals.filter(d => d.stage_id !== "won").length} open deals · R{totalPipeline.toLocaleString()} total</div>
+        </div>
+        <button className="btn btn-pri" onClick={() => setShowAdd(true)}>+ New Deal</button>
+      </div>
+
+      <div className="stats" style={{ gridTemplateColumns: "repeat(3,1fr)", marginBottom: 24 }}>
+        <div className="stat"><div className="stat-label">Pipeline Value</div><div className="stat-val">R{totalPipeline.toLocaleString()}</div></div>
+        <div className="stat"><div className="stat-label">Won This Period</div><div className="stat-val" style={{ color: "var(--grn2)" }}>R{wonValue.toLocaleString()}</div></div>
+        <div className="stat"><div className="stat-label">Open Deals</div><div className="stat-val">{deals.filter(d => d.stage_id !== "won").length}</div></div>
+      </div>
+
+      <div className="kanban">
+        {DEAL_STAGES.map(stage => (
+          <div key={stage.id} className="kanban-col">
+            <div className="kanban-col-hdr" style={{ borderBottomColor: stage.color }}>
+              <div className="kanban-col-name">{stage.name}</div>
+              <span className="kanban-col-count">{stageDeals(stage.id).length}</span>
+              <span className="kanban-col-total" style={{ fontFamily: "var(--m)" }}>R{stageTotal(stage.id).toLocaleString()}</span>
+            </div>
+            <div className="kanban-cards">
+              {stageDeals(stage.id).map(deal => (
+                <div key={deal.id} className="deal-card">
+                  <div className="deal-name">{deal.name}</div>
+                  <div className="deal-company">{deal.companies?.name || deal.contacts?.first_name || "—"}</div>
+                  <div className="deal-footer">
+                    <span className="deal-amount">R{(deal.amount || 0).toLocaleString()}</span>
+                    <span className="deal-days">{daysSince(deal)}d</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 4, marginTop: 8, flexWrap: "wrap" }}>
+                    {DEAL_STAGES.filter(s => s.id !== stage.id).slice(0, 2).map(s => (
+                      <button key={s.id} className="btn btn-sec btn-sm" style={{ fontSize: 11, padding: "3px 8px" }}
+                        onClick={() => moveStage(deal.id, s.id)}>→ {s.name}</button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {stageDeals(stage.id).length === 0 && (
+                <div style={{ textAlign: "center", padding: "20px 10px", color: "var(--g-ink4)", fontSize: 12 }}>No deals</div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {showAdd && (
+        <div className="modal-bg" onClick={e => e.target === e.currentTarget && setShowAdd(false)}>
+          <div className="modal">
+            <div className="modal-title">New Deal</div>
+            <div className="field"><label>Deal Name *</label><input className="inp" value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="Acme Corp — Digital Audit" /></div>
+            <div className="inp-row">
+              <div className="field"><label>Value (R)</label><input className="inp" type="number" value={form.amount} onChange={e => setForm(f => ({...f, amount: e.target.value}))} placeholder="50000" /></div>
+              <div className="field"><label>Stage</label>
+                <select className="inp" value={form.stage_id} onChange={e => setForm(f => ({...f, stage_id: e.target.value}))}>
+                  {DEAL_STAGES.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="field"><label>Contact</label>
+              <select className="inp" value={form.contact_id} onChange={e => setForm(f => ({...f, contact_id: e.target.value}))}>
+                <option value="">— Select contact —</option>
+                {contacts.map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name} {c.companies?.name ? `· ${c.companies.name}` : ""}</option>)}
+              </select>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-sec" onClick={() => setShowAdd(false)}>Cancel</button>
+              <button className="btn btn-pri" onClick={save} disabled={saving}>{saving ? "Saving..." : "Create Deal"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── PLACEHOLDER MODULE ───────────────────────────────────
+function ComingSoon({ name, icon }) {
+  return (
+    <div>
+      <div className="page-title" style={{ marginBottom: 24 }}>{name}</div>
+      <div className="card">
+        <div className="empty">
+          <div className="empty-ico">{icon}</div>
+          <div className="empty-msg">{name} — Coming Next Session</div>
+          <div className="empty-sub">This module is being built. Check back in the next session.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────
+function Dashboard({ user }) {
+  const [data, setData] = useState({ contacts: 0, deals: [], tickets: 0, tasks: 0 });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      api.get("/api/contacts?limit=1").catch(() => ({ count: 0 })),
+      api.get("/api/deals").catch(() => []),
+      api.get("/api/tickets").catch(() => []),
+      api.get("/api/tasks").catch(() => []),
+    ]).then(([contacts, deals, tickets, tasks]) => {
+      setData({
+        contacts: contacts.count || 0,
+        deals: deals || [],
+        tickets: (tickets || []).length,
+        tasks: (tasks || []).length,
+      });
+    }).finally(() => setLoading(false));
+  }, []);
+
+  const openDeals = data.deals.filter(d => !["won"].includes(d.stage_id));
+  const pipelineVal = openDeals.reduce((sum, d) => sum + (d.amount || 0), 0);
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const day = new Date().toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
+  return (
+    <div>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.5px", color: "var(--g-ink)" }}>
+          {greeting}, {user?.name?.split(" ")[0] || "there"} 👋
+        </div>
+        <div style={{ fontSize: 13, color: "var(--g-ink3)", marginTop: 4 }}>{day}</div>
+      </div>
+
+      {loading ? <div className="loading"><div className="spinner" /></div> : (
+        <>
+          <div className="stats">
+            <div className="stat"><div className="stat-label">Pipeline Value</div><div className="stat-val">R{pipelineVal.toLocaleString()}</div><div className="stat-sub">{openDeals.length} open deals</div></div>
+            <div className="stat"><div className="stat-label">Contacts</div><div className="stat-val">{data.contacts.toLocaleString()}</div></div>
+            <div className="stat"><div className="stat-label">Open Tickets</div><div className="stat-val" style={{ color: data.tickets > 5 ? "var(--red)" : "var(--g-ink)" }}>{data.tickets}</div></div>
+            <div className="stat"><div className="stat-label">Open Tasks</div><div className="stat-val">{data.tasks}</div></div>
+          </div>
+
+          <div className="card">
+            <div className="card-title">🤖 JARVIS is ready</div>
+            <p style={{ fontSize: 13, color: "var(--g-ink2)", lineHeight: 1.6 }}>
+              Click the orb in the top right to open JARVIS. Ask about your pipeline, get deal analysis, draft emails, create tasks, or anything else across your workspace. JARVIS has live context from all your modules.
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════
+export default function App() {
+  const [session, setSession] = useState(null); // { token, user: { id, name, email, orgId } }
+  const [page, setPage] = useState("home");
+  const [selectedContact, setSelectedContact] = useState(null);
+  const [jarvisOpen, setJarvisOpen] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [loginErr, setLoginErr] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  const login = async () => {
+    if (!loginForm.email || !loginForm.password) return;
+    setLoginLoading(true);
+    setLoginErr("");
+    try {
+      const res = await fetch(`${API}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loginForm)
+      });
+      if (!res.ok) {
+        // Try Supabase direct auth if no /api/auth/login endpoint
+        const errText = await res.text();
+        throw new Error(errText || "Login failed");
+      }
+      const data = await res.json();
+      const token = data.token || data.access_token;
+      api.setToken(token);
+      setSession({ token, user: { id: data.user?.id, name: data.profile?.full_name || data.user?.email, email: data.user?.email, orgId: data.profile?.org_id } });
+    } catch (e) {
+      setLoginErr("Invalid credentials. Please check your email and password.");
+    }
+    setLoginLoading(false);
+  };
+
+  const navigate = (type, item) => {
+    if (type === "contact") { setSelectedContact(item); setPage("crm"); }
+    else if (type === "deal") setPage("pipeline");
+    else if (type === "task") setPage("projects");
+    else if (type === "ticket") setPage("tickets");
+  };
+
+  if (!session) {
+    return (
+      <div className="login-wrap">
+        <style>{css}</style>
+        <div className="login-card">
+          <div className="login-orb" />
+          <div className="login-title">Project Omni</div>
+          <div className="login-sub">Unified Business OS · by Republic Growth Advisory</div>
+          <label className="login-label">Email</label>
+          <input className="login-inp" type="email" placeholder="you@republicgrowthadvisory.com" value={loginForm.email} onChange={e => setLoginForm(f => ({...f, email: e.target.value}))} onKeyDown={e => e.key === "Enter" && login()} autoFocus />
+          <label className="login-label">Password</label>
+          <input className="login-inp" type="password" placeholder="••••••••••••" value={loginForm.password} onChange={e => setLoginForm(f => ({...f, password: e.target.value}))} onKeyDown={e => e.key === "Enter" && login()} />
+          <button className="login-btn" onClick={login} disabled={loginLoading}>{loginLoading ? "Signing in..." : "Sign in to Omni →"}</button>
+          {loginErr && <div className="login-err">{loginErr}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  const nav = [
+    { id: "home", ico: "🏠", label: "Home" },
+    { id: "crm", ico: "👥", label: "CRM — Contacts" },
+    { id: "pipeline", ico: "💼", label: "Pipeline" },
+    { id: "projects", ico: "📋", label: "Projects & Tasks" },
+    { id: "channels", ico: "💬", label: "Channels" },
+    { id: "tickets", ico: "🎫", label: "Tickets / Helpdesk" },
+    { id: "kb", ico: "📚", label: "Knowledge Base" },
+    { id: "eos", ico: "🎯", label: "EOS Traction" },
+    { id: "hr", ico: "👤", label: "HR" },
+    { id: "time", ico: "⏱", label: "Time Tracking" },
+    { id: "invoicing", ico: "💰", label: "Invoicing" },
+    { id: "social", ico: "📱", label: "Social Media" },
+    { id: "reports", ico: "📊", label: "Reports" },
+    { id: "automations", ico: "⚡", label: "Automations" },
+    { id: "integrations", ico: "🔗", label: "Integrations" },
+  ];
+
+  const pageTitles = { home: "Home", crm: "CRM — Contacts", pipeline: "Pipeline", projects: "Projects & Tasks", channels: "Channels", tickets: "Tickets", kb: "Knowledge Base", eos: "EOS Traction", hr: "HR", time: "Time Tracking", invoicing: "Invoicing", social: "Social Media", reports: "Reports", automations: "Automations", integrations: "Integrations" };
+
+  return (
+    <div className="app">
+      <style>{css}</style>
+
+      <div className="sidebar">
+        <div className="sb-logo">
+          <div className="sb-logo-mark">O</div>
+          <div className="sb-logo-name">Project Omni</div>
+        </div>
+        <div className="sb-ws">
+          <div className="sb-ws-av">RG</div>
+          <div className="sb-ws-name">Republic Growth Advisory</div>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <div className="sb-section">Overview</div>
+          {nav.slice(0, 2).map(n => <div key={n.id} className={`sbi ${page === n.id ? "on" : ""}`} onClick={() => { setPage(n.id); setSelectedContact(null); }}><span className="sbi-ico">{n.ico}</span>{n.label}</div>)}
+          <div className="sb-section">Sales</div>
+          {nav.slice(2, 5).map(n => <div key={n.id} className={`sbi ${page === n.id ? "on" : ""}`} onClick={() => { setPage(n.id); setSelectedContact(null); }}><span className="sbi-ico">{n.ico}</span>{n.label}</div>)}
+          <div className="sb-section">Intelligence</div>
+          {nav.slice(5, 8).map(n => <div key={n.id} className={`sbi ${page === n.id ? "on" : ""}`} onClick={() => { setPage(n.id); setSelectedContact(null); }}><span className="sbi-ico">{n.ico}</span>{n.label}</div>)}
+          <div className="sb-section">Operations</div>
+          {nav.slice(8).map(n => <div key={n.id} className={`sbi ${page === n.id ? "on" : ""}`} onClick={() => { setPage(n.id); setSelectedContact(null); }}><span className="sbi-ico">{n.ico}</span>{n.label}</div>)}
+        </div>
+        <div className="sb-bottom">
+          <div className="sb-user">
+            <div className="sb-av">{initials(session.user?.name)}</div>
+            <div>
+              <div className="sb-user-name">{session.user?.name || session.user?.email}</div>
+              <div className="sb-user-role">Managing Partner</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="main">
+        <div className="topbar">
+          <div className="topbar-title">{pageTitles[page]}</div>
+          <SearchBox onNavigate={navigate} />
+          <button className="topbar-btn" onClick={() => setJarvisOpen(true)}>🤖 Ask JARVIS</button>
+        </div>
+
+        <div className="content">
+          {page === "home" && <Dashboard user={session.user} />}
+          {page === "crm" && !selectedContact && <Contacts onSelectContact={c => setSelectedContact(c)} />}
+          {page === "crm" && selectedContact && <ContactDetail contact={selectedContact} onBack={() => setSelectedContact(null)} />}
+          {page === "pipeline" && <Pipeline />}
+          {page === "projects" && <ComingSoon name="Projects & Tasks" icon="📋" />}
+          {page === "channels" && <ComingSoon name="Channels" icon="💬" />}
+          {page === "tickets" && <ComingSoon name="Tickets / Helpdesk" icon="🎫" />}
+          {page === "kb" && <ComingSoon name="Knowledge Base" icon="📚" />}
+          {page === "eos" && <ComingSoon name="EOS Traction" icon="🎯" />}
+          {page === "hr" && <ComingSoon name="HR" icon="👤" />}
+          {page === "time" && <ComingSoon name="Time Tracking" icon="⏱" />}
+          {page === "invoicing" && <ComingSoon name="Invoicing (Xero)" icon="💰" />}
+          {page === "social" && <ComingSoon name="Social Media" icon="📱" />}
+          {page === "reports" && <ComingSoon name="Reports & Analytics" icon="📊" />}
+          {page === "automations" && <ComingSoon name="Automations Engine" icon="⚡" />}
+          {page === "integrations" && <ComingSoon name="Integrations" icon="🔗" />}
+        </div>
+      </div>
+
+      <Jarvis open={jarvisOpen} onToggle={() => setJarvisOpen(o => !o)} user={session.user} currentPage={pageTitles[page]} />
+    </div>
+  );
+}
